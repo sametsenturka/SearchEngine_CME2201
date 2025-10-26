@@ -2,7 +2,7 @@ package HashMaps;
 
 import Data.Entry;
 
-import java.util.Objects;
+import java.util.*;
 
 public class HashMapCustom<K,V> {
 
@@ -14,8 +14,14 @@ public class HashMapCustom<K,V> {
     private static final double DEFAULT_LOAD_FACTOR = 0.5;
     private static final int PAF_Z = 33;
 
-    private Entry<K, V>[] table;
+    private static class InternalEntry<K,V> {
+        K key; V value; boolean isDeleted;
+        InternalEntry(K k, V v) { key = k; value = v; isDeleted = false; }
+    }
+
+    private Entry<K,V>[] table;
     private int size;
+
     private double loadFactor;
     private HashFunctionType hashFunctionType;
     private CollisionType collisionType;
@@ -53,6 +59,7 @@ public class HashMapCustom<K,V> {
     public boolean containsKey(K key) {
         return get(key) != null;
     }
+
 
     public V get(K key) {
         int index = findSlotIndex(key, false); // false -> don't insert, just find
@@ -101,17 +108,16 @@ public class HashMapCustom<K,V> {
         return old;
     }
 
-    public Entry<K, V>[] entrySet(){
-        Entry<K,V>[] entrySet = new Entry[table.length];
-
-        for(int i=0; i<table.length; i++){
-            if(table[i]!=null){
-                entrySet[i] = table[i];
-            }
+    public Set<Map.Entry<K, V>> entrySet() {
+        Set<Map.Entry<K, V>> result = new HashSet<>();
+        for (Entry<K,V> e : table) {
+            if (e == null) continue;            // boş slot atla
+            if (e.isDeleted) continue;          // tombstone atla
+            // AbstractMap.SimpleEntry immutable wrapper kullan:
+            result.add(new AbstractMap.SimpleEntry<>(e.key, e.value));
         }
-        return entrySet;
+        return result;
     }
-
     public V getOrDefault(K key, V defaultValue) {
         V value = get(key);
         return (value != null) ? value : defaultValue;

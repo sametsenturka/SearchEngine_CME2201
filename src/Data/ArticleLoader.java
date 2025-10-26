@@ -1,5 +1,6 @@
 package Data;
 
+import HashMaps.HashMapArticleSearchOptimised;
 import HashMaps.HashMapCustom;
 
 import java.io.File;
@@ -19,7 +20,7 @@ public class ArticleLoader {
         this.indexMap = new HashMapCustom<>();
         this.wordFrequencyMap = new HashMapCustom<>();
         this.stopWords = new HashSet<>();
-        this.delimitersRegex = "";
+        this.delimitersRegex = " ";
     }
 
     public static void loadStopWords(String filename) {
@@ -92,7 +93,8 @@ public class ArticleLoader {
                 articleMap.put(id, article);
 
                 if (articleMap.size() % 1000 == 0) {
-                    System.out.println("-> " + articleMap.size() + " uploaded. (Last ID: " + id + ")");
+
+                    System.out.println("->  %" + (articleMap.size()/280) + " uploaded. (Last ID: " + id + ")");
                 }
             }
 
@@ -110,40 +112,42 @@ public class ArticleLoader {
         return s.replace("\"\"", "\"");
     }
 
-
     public static void indexArticles() {// Makaleleri dizinleme metodu
         System.out.println("---Indexing---");
 
-        for (Entry<String, Article> entry : articleMap.entrySet()) {
+        for (Map.Entry<String, Article> entry : articleMap.entrySet()) {
 
-            if(entry!=null){
-                String articleId = String.valueOf(entry.getKey());
-                Article article = entry.getValue();
+            if (entry == null) continue;
+            if (entry.getKey() == null) continue;
 
-                String content = article.getContent();
-                // Makale içeriğini, ayraç regex'ine göre kelimelere böl
-                String[] words = content.split(delimitersRegex);
+            String articleId = String.valueOf(entry.getKey());
+            Article article = entry.getValue();
+            if (article == null) continue;
 
-                for (String rawWord : words) {
-                    String word = rawWord.trim().toLowerCase();
+            String content = article.getContent();
+            String[] words = content.split(" ");
 
-                    // Stop word veya boş kelimeleri atla
-                    if (word.isEmpty() || stopWords.contains(word)) continue;
+            for (String rawWord : words) {
 
-                    // Kelime Frekans Haritasını güncelle (O(1) sürede)
-                    wordFrequencyMap.put(word, wordFrequencyMap.getOrDefault(word, 0) + 1);
+                rawWord = normalizeText(rawWord);
+                rawWord = rawWord.trim();
 
-                    // Index Haritasını güncelle (Kelimenin geçtiği ID'yi kaydet)
-                    HashSet<String> articleIds = indexMap.get(word);
+                String word = rawWord.trim().toLowerCase();
 
-                    if (articleIds == null) {
-                        articleIds = new HashSet<>();
-                        indexMap.put(word, articleIds);
-                    }
-                    articleIds.add(articleId); // HashSet olduğu için ID'yi sadece bir kez kaydeder
+                if (word.isEmpty() || stopWords.contains(word)) continue;
+
+                wordFrequencyMap.put(word, wordFrequencyMap.getOrDefault(word, 0) + 1);
+
+                HashSet<String> articleIds = indexMap.get(word);
+
+                if (articleIds == null) {
+                    articleIds = new HashSet<>();
+                    indexMap.put(word, articleIds);
                 }
+                articleIds.add(articleId); // HashSet olduğu için ID'yi sadece bir kez kaydeder
             }
         }
+
 
         System.out.println("Success: Total of " + indexMap.size() + " words listed.");
         System.out.println("---Indexing Complete---");
@@ -155,98 +159,86 @@ public class ArticleLoader {
             return;
         }
 
-        // Güvenli split regex
-        String splitRegex = (delimitersRegex == null || delimitersRegex.isEmpty()) ? "\\s+" : delimitersRegex;
-
-        // Normalize query for phrase check (remove delimiters -> single space, lower-case, trim)
-        String normalizedQuery = normalizeTextForSearch(searchQuery, splitRegex);
+        String normalizedQuery = normalizeText(searchQuery);
         if (normalizedQuery.isEmpty()) {
             System.out.println("No word found for given search query");
             return;
         }
 
-        // Tokenize query into words for candidate reduction (unique words)
-        String[] rawTokens = normalizedQuery.split("\\s+");
-        LinkedHashSet<String> queryTerms = new LinkedHashSet<>();
-        for (String t : rawTokens) {
-            if (t.isEmpty()) continue;
-            if (stopWords != null && stopWords.contains(t)) continue; // stop word filter
-            queryTerms.add(t);
-        }
-
-        if (queryTerms.isEmpty()) {
-            System.out.println("No word found for given search query");
+        String[] queryWords = normalizedQuery.split("\\s+");
+        if (queryWords.length == 0) {
+            System.out.println("No valid query words found.");
             return;
         }
 
-        // Build posting lists for each term and short-circuit if any term missing
-        ArrayList<HashSet<String>> postingLists = new ArrayList<>(queryTerms.size());
-        for (String term : queryTerms) {
+        HashMap<String, Integer> articleScores = new HashMap<>();
+
+        for (String term : queryWords) {
             HashSet<String> posting = indexMap.get(term);
-            if (posting == null || posting.isEmpty()) {
-                System.out.println("-> Word '" + term + "' is not found. No Results.");
-                return;
+            if (posting == null) continue; // kelime yoksa atla
+
+            for (String articleId : posting) {
+                Article article = articleMap.get(articleId);
+                if (article == null) continue;
+
+                int score = articleScores.getOrDefault(articleId, 0);
+
+                String normalizedTitle = normalizeText(article.getHeadline());
+                String normalizedContent = normalizeText(article.getContent());
+
+                if (normalizedTitle.contains(term)) {
+                    score += 10;
+                }
+
+                if (normalizedContent.contains(term)) {
+                    score += 1;
+                }
+
+                articleScores.put(articleId, score);
             }
-            postingLists.add(posting);
         }
 
-        // Sort by size ascending to optimize intersection
-        postingLists.sort((a, b) -> Integer.compare(a.size(), b.size()));
-
-        // Intersect posting lists to get candidate articles (IDs)
-        HashSet<String> candidates = new HashSet<>(postingLists.get(0));
-        for (int i = 1; i < postingLists.size(); i++) {
-            candidates.retainAll(postingLists.get(i));
-            if (candidates.isEmpty()) break;
-        }
-
-        // If no candidates -> no results
-        System.out.println("\n--- Search Results ('" + searchQuery + "') ---");
-        if (candidates.isEmpty()) {
-            System.out.println("No article is found containing your search.");
+        // Hiç eşleşme yoksa
+        if (articleScores.isEmpty()) {
+            System.out.println("No articles found for your query.");
             return;
         }
 
-        // Now do exact phrase check on normalized content of each candidate
-        final int MAX_SHOW = 200;
+        List<Map.Entry<String, Integer>> sortedResults = new ArrayList<>(articleScores.entrySet());
+        sortedResults.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+
+        System.out.println("\n--- Search Results for '" + searchQuery + "' ---");
         int shown = 0;
-        for (String id : candidates) {
-            Article article = articleMap.get(id);
+        for (Map.Entry<String, Integer> entry : sortedResults) {
+            String articleId = entry.getKey();
+            int score = entry.getValue();
+            Article article = articleMap.get(articleId);
             if (article == null) continue;
 
-            // Normalize article content for phrase checking
-            String normalizedContent = normalizeTextForSearch(article.getContent(), splitRegex);
+            System.out.println("[" + score + " pts] " + article.getHeadline());
+            shown++;
 
-            // Use contains on normalized strings (both are lower-case, delimiters normalized)
-            if (normalizedContent.contains(normalizedQuery)) {
-                System.out.println(article); // veya daha seçici çıktı
-                shown++;
-                if (shown >= MAX_SHOW) break;
-            }
+            if (shown >= 20) break; // ilk 20 sonucu göster
         }
 
-        if (shown == 0) {
-            System.out.println("No article is found containing your search.");
-        } else if (shown < candidates.size()) {
-            System.out.println("... (" + (candidates.size() - shown) + " more candidate articles contain the words but are not shown)");
-        }
+        System.out.println("\nTotal results: " + sortedResults.size());
     }
 
-    // Yardımcı: metni arama için normalize eder
-    private static String normalizeTextForSearch(String text, String splitRegex) {
+    public static String normalizeText(String text) {
         if (text == null) return "";
-        // Replace delimiters with single space, collapse multiple spaces, toLowerCase
-        // splitRegex is already a character-class style regex like "[,.;:...]" or default "\\s+"
-        String interim;
-        try {
-            interim = text.replaceAll(splitRegex, " ");
-        } catch (Exception e) {
-            // splitRegex bozuksa fallback
-            interim = text.replaceAll("\\s+", " ");
-        }
-        // collapse multiple spaces and trim, toLowerCase
-        return interim.replaceAll("\\s+", " ").trim().toLowerCase();
+
+        text = text.toLowerCase();
+
+        // Noktalama işaretlerini boşlukla değiştir
+        text = text.replaceAll("[^a-z0-9\\s-]", " ");
+
+        // Fazla boşlukları tek boşluğa indir
+        text = text.replaceAll("\\s+", " ").trim();
+
+        return text;
     }
+
+
 
 
 

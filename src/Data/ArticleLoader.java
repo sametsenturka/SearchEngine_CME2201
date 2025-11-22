@@ -1,11 +1,12 @@
 package Data;
 
-import HashMaps.HashMapArticleSearchOptimised;
 import HashMaps.HashMapCustom;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.util.*;
+import java.util.regex.*;
+
 
 public class ArticleLoader {
 
@@ -15,8 +16,10 @@ public class ArticleLoader {
     private static HashSet<String> stopWords;
     private static String delimitersRegex;
 
-    public ArticleLoader() {
-        this.articleMap = new HashMapCustom<>();
+    public ArticleLoader(int initialCapacity, double loadFactor,
+                         HashMapCustom.HashFunctionType hashFunctionType, HashMapCustom.CollisionType collisionType)  {
+
+        this.articleMap = new HashMapCustom<>(initialCapacity, loadFactor, hashFunctionType, collisionType);
         this.indexMap = new HashMapCustom<>();
         this.wordFrequencyMap = new HashMapCustom<>();
         this.stopWords = new HashSet<>();
@@ -68,15 +71,17 @@ public class ArticleLoader {
         }
     }
 
-    public static void loadArticles(String filename) {
+    public static long loadArticles(String filename) {
         String csvSplitRegex = ",(?=([^\"]*\"[^\"]*\")*[^\"]*$)";
         int linesRead = 0;
+        int articleCount = 0;
 
         try (Scanner fileScanner = new Scanner(new File(filename), "UTF-8")) {
             if (fileScanner.hasNextLine()) fileScanner.nextLine(); // header
 
+            String line = "";
             while (fileScanner.hasNextLine()) {
-                String line = fileScanner.nextLine();
+                line = fileScanner.nextLine();
                 linesRead++;
                 String[] columns = line.split(csvSplitRegex, -1); // -1 to keep trailing empty cols
 
@@ -86,22 +91,28 @@ public class ArticleLoader {
                 }
 
                 String id = stripQuotes(columns[0].trim());
-                String headline = stripQuotes(columns[6].trim());
-                String content = stripQuotes(columns[7].trim());
+                String firstTopic = columns[3].trim();
+                String secondTopic = columns[4].trim();
+                String headline = stripQuotes(columns[6].trim()) + " Topics: [" + firstTopic + "], [" + secondTopic + "] ";
+                String summary = columns[7].trim();
+                String content = columns[10].trim();
 
-                Article article = new Article(id, headline, content);
+
+                Article article = new Article(id, headline, content, summary);
                 articleMap.put(id, article);
+                articleCount++;
 
                 if (articleMap.size() % 1000 == 0) {
-
                     System.out.println("->  %" + (articleMap.size()/280) + " uploaded. (Last ID: " + id + ")");
                 }
             }
 
-            System.out.println("Success: " + filename + " uploaded. Total of " + articleMap.size() + " articles added.");
+            System.out.println("Success: " + filename + " uploaded. Total of " + articleCount + " articles added.");
         } catch (FileNotFoundException e) {
             System.err.println("ERROR: " + filename + " can't be reached.");
         }
+
+        return articleMap.getCollisionCount();
     }
 
     private static String stripQuotes(String s) {
@@ -112,70 +123,91 @@ public class ArticleLoader {
         return s.replace("\"\"", "\"");
     }
 
-    public static void indexArticles() {// Makaleleri dizinleme metodu
+    public static long indexArticles() {
         System.out.println("---Indexing---");
 
-        for (Map.Entry<String, Article> entry : articleMap.entrySet()) {
+        long start = System.nanoTime();
+        int indexedCount = 0;
 
+        Pattern pattern = Pattern.compile("\\b\\w+\\b");
+
+        String articleId = null;
+        Article article = null;
+        String content = null;
+        Matcher matcher = null;
+
+        for (Map.Entry<String, Article> entry : articleMap.entrySet()) {
             if (entry == null) continue;
             if (entry.getKey() == null) continue;
 
-            String articleId = String.valueOf(entry.getKey());
-            Article article = entry.getValue();
+            articleId = String.valueOf(entry.getKey());
+            article = entry.getValue();
             if (article == null) continue;
 
-            String content = article.getContent();
-            String[] words = content.split(" ");
+            content = article.getContent();
+            if (content == null || content.isEmpty()) continue;
 
-            for (String rawWord : words) {
+            matcher = pattern.matcher(content.toLowerCase());
 
-                rawWord = normalizeText(rawWord);
-                rawWord = rawWord.trim();
-
-                String word = rawWord.trim().toLowerCase();
+            while (matcher.find()) {
+                String word = matcher.group().trim();
 
                 if (word.isEmpty() || stopWords.contains(word)) continue;
 
                 wordFrequencyMap.put(word, wordFrequencyMap.getOrDefault(word, 0) + 1);
 
                 HashSet<String> articleIds = indexMap.get(word);
-
                 if (articleIds == null) {
                     articleIds = new HashSet<>();
                     indexMap.put(word, articleIds);
                 }
-                articleIds.add(articleId); // HashSet olduğu için ID'yi sadece bir kez kaydeder
+                articleIds.add(articleId);
+                indexedCount++;
             }
         }
 
+        long end = System.nanoTime();
+        long millis = (end - start) / 1000000;
 
-        System.out.println("Success: Total of " + indexMap.size() + " words listed.");
+        System.out.println("Success: Total of " + indexMap.size() + " words listed in " + (double)(millis/1000) + " seconds.");
         System.out.println("---Indexing Complete---");
+
+        return millis;
     }
 
-    public static void searchArticles(String searchQuery) {
+    public static long  searchArticles(String searchQuery) {
+
+        long start = System.nanoTime();
+
         if (searchQuery == null || searchQuery.trim().isEmpty()) {
             System.out.println("No word found for given search query");
-            return;
+            long end = System.nanoTime();
+            long millis = (end - start) / 1000000;
+            return millis;
         }
 
         String normalizedQuery = normalizeText(searchQuery);
         if (normalizedQuery.isEmpty()) {
             System.out.println("No word found for given search query");
-            return;
+            long end = System.nanoTime();
+            long millis = (end - start) / 1000000;
+            return millis;
         }
 
         String[] queryWords = normalizedQuery.split("\\s+");
         if (queryWords.length == 0) {
             System.out.println("No valid query words found.");
-            return;
+            long end = System.nanoTime();
+            long millis = (end - start) / 1000000;
+            return millis;
         }
 
         HashMap<String, Integer> articleScores = new HashMap<>();
 
+        HashSet<String> posting = null;
         for (String term : queryWords) {
-            HashSet<String> posting = indexMap.get(term);
-            if (posting == null) continue; // kelime yoksa atla
+            posting = indexMap.get(term);
+            if (posting == null) continue;
 
             for (String articleId : posting) {
                 Article article = articleMap.get(articleId);
@@ -185,13 +217,18 @@ public class ArticleLoader {
 
                 String normalizedTitle = normalizeText(article.getHeadline());
                 String normalizedContent = normalizeText(article.getContent());
+                String normalizedSummary = normalizeText(article.getSummary());
 
                 if (normalizedTitle.contains(term)) {
-                    score += 10;
+                    score += 19;
+                }
+
+                if(normalizedSummary.contains(term)){
+                    score += 7;
                 }
 
                 if (normalizedContent.contains(term)) {
-                    score += 1;
+                    score += 5;
                 }
 
                 articleScores.put(articleId, score);
@@ -201,7 +238,9 @@ public class ArticleLoader {
         // Hiç eşleşme yoksa
         if (articleScores.isEmpty()) {
             System.out.println("No articles found for your query.");
-            return;
+            long end = System.nanoTime();
+            long millis = (end - start) / 1000000;
+            return millis;
         }
 
         List<Map.Entry<String, Integer>> sortedResults = new ArrayList<>(articleScores.entrySet());
@@ -209,19 +248,36 @@ public class ArticleLoader {
 
         System.out.println("\n--- Search Results for '" + searchQuery + "' ---");
         int shown = 0;
+
+        String relevancy = "";
         for (Map.Entry<String, Integer> entry : sortedResults) {
             String articleId = entry.getKey();
             int score = entry.getValue();
-            Article article = articleMap.get(articleId);
-            if (article == null) continue;
+            Article article_results = articleMap.get(articleId);
+            if (article_results == null) continue;
 
-            System.out.println("[" + score + " pts] " + article.getHeadline());
+            if(score>70){
+                relevancy = "HIGHLY Relevant";
+            } else if(score>60){
+                relevancy = "Very Relevant";
+            } else if(score>31){
+                relevancy = "Relevant";
+            } else{
+                relevancy = "Irrelevant";
+            }
+
+            System.out.println("[" + relevancy + "][score: " + score + "pts] " + article_results.getHeadline());
             shown++;
 
-            if (shown >= 20) break; // ilk 20 sonucu göster
+            if (shown >= 25) break; // ilk 20 sonucu göster
         }
 
+        long end = System.nanoTime();
+        long millis = (end - start) / 1000000;
+
         System.out.println("\nTotal results: " + sortedResults.size());
+
+        return millis;
     }
 
     public static String normalizeText(String text) {
@@ -237,9 +293,5 @@ public class ArticleLoader {
 
         return text;
     }
-
-
-
-
 
 }
